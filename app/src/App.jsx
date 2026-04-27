@@ -10,6 +10,13 @@ const EMOJI = {
 const AUTO_INTERVAL_MS = 5000;
 const HISTORY_MAX = 8;
 const MAX_ANALYZE_FACES = 2;
+const MAX_OBJECTS = 3;
+const OBJECT_UNCERTAIN_THRESHOLD = 0.45;
+const PERFORMANCE_MODES = {
+  balanced: { label: "Balanced", face: true, gesture: true, object: true, faceMs: 100, gestureMs: 150, objectMs: 300 },
+  fast: { label: "Fast", face: true, gesture: true, object: false, faceMs: 80, gestureMs: 140, objectMs: 999999 },
+  object: { label: "Object Demo", face: false, gesture: false, object: true, faceMs: 999999, gestureMs: 999999, objectMs: 180 },
+};
 const FALLBACK_MODELS = ["llama3.2-vision", "llava:7b", "llava:13b", "minicpm-v"];
 const ALLOWED_GESTURES = new Set([
   "Thumb_Up",
@@ -88,12 +95,15 @@ export default function App() {
   const overlayRef = useRef(null);
   const detectorRef = useRef(null);
   const gestureRef = useRef(null);
+  const objectDetectorRef = useRef(null);
   const rafRef = useRef(null);
   const lastDetectTsRef = useRef(0);
   const lastGestureTsRef = useRef(0);
+  const lastObjectTsRef = useRef(0);
   const lastFrameTsRef = useRef(0);
   const boxesRef = useRef([]);
   const handLandmarksRef = useRef([]);
+  const objectBoxesRef = useRef([]);
   const analyzingRef = useRef(false);
   const autoTimerRef = useRef(null);
 
@@ -104,6 +114,8 @@ export default function App() {
   const [autoOn, setAutoOn] = useState(false);
   const [faceBoxesOn, setFaceBoxesOn] = useState(true);
   const [gestureOn, setGestureOn] = useState(true);
+  const [objectOn, setObjectOn] = useState(true);
+  const [performanceMode, setPerformanceMode] = useState("balanced");
   const [detectorInfo, setDetectorInfo] = useState("Detector: loading…");
   const [faceCount, setFaceCount] = useState(0);
   const [currentGesture, setCurrentGesture] = useState("None");
@@ -115,7 +127,15 @@ export default function App() {
   const [currentDesc, setCurrentDesc] = useState(null);
   const [currentConfidence, setCurrentConfidence] = useState(0);
   const [personResults, setPersonResults] = useState([]);
+  const [objects, setObjects] = useState([]);
   const [history, setHistory] = useState([]);
+
+  useEffect(() => {
+    const mode = PERFORMANCE_MODES[performanceMode] || PERFORMANCE_MODES.balanced;
+    setFaceBoxesOn(mode.face);
+    setGestureOn(mode.gesture);
+    setObjectOn(mode.object);
+  }, [performanceMode]);
 
   useEffect(() => {
     navigator.mediaDevices
@@ -159,7 +179,15 @@ export default function App() {
         });
         if (!cancelled) {
           gestureRef.current = gesture;
-          setDetectorInfo("Face+Gesture: MediaPipe Tasks");
+        }
+
+        const tf = await import("@tensorflow/tfjs");
+        await tf.ready();
+        const cocoSsd = await import("@tensorflow-models/coco-ssd");
+        const objectDetector = await cocoSsd.load({ base: "lite_mobilenet_v2" });
+        if (!cancelled) {
+          objectDetectorRef.current = objectDetector;
+          setDetectorInfo("Face+Gesture+Objects: MediaPipe+TF");
         }
       } catch (err) {
         if (!cancelled) {
@@ -193,9 +221,11 @@ export default function App() {
       }
       lastFrameTsRef.current = performance.now();
 
+      const mode = PERFORMANCE_MODES[performanceMode] || PERFORMANCE_MODES.balanced;
+
       if (faceBoxesOn && video.videoWidth && detectorRef.current) {
         const now = performance.now();
-        if (now - lastDetectTsRef.current > 100) {
+        if (now - lastDetectTsRef.current > mode.faceMs) {
           lastDetectTsRef.current = now;
           try {
             const result = detectorRef.current.detectForVideo(video, now);
@@ -233,7 +263,7 @@ export default function App() {
 
       if (gestureOn && video.videoWidth && gestureRef.current) {
         const now = performance.now();
-        if (now - lastGestureTsRef.current > 150) {
+        if (now - lastGestureTsRef.current > mode.gestureMs) {
           lastGestureTsRef.current = now;
           try {
             const result = gestureRef.current.recognizeForVideo(video, now);
@@ -276,6 +306,54 @@ export default function App() {
         if (!gestureOn) setCurrentGesture("None");
       }
 
+      if (objectOn && video.videoWidth && objectDetectorRef.current) {
+        const now = performance.now();
+        if (now - lastObjectTsRef.current > mode.objectMs) {
+          lastObjectTsRef.current = now;
+          objectDetectorRef.current
+            .detect(video)
+            .then((predictions) => {
+              const top = (predictions || [])
+                .filter((p) => p.score >= 0.35)
+                .sort((a, b) => b.score - a.score)
+                .slice(0, MAX_OBJECTS)
+                .map((p) => ({
+                  class: p.score < OBJECT_UNCERTAIN_THRESHOLD ? "Uncertain" : p.class,
+                  score: p.score,
+                  bbox: p.bbox,
+                }));
+              objectBoxesRef.current = top;
+              setObjects(top);
+            })
+            .catch(() => {});
+        }
+
+        ctx.lineWidth = 2;
+        for (const obj of objectBoxesRef.current) {
+          const [x, y, bw, bh] = obj.bbox;
+          const sx = (x / video.videoWidth) * w;
+          const sy = (y / video.videoHeight) * h;
+          const sw = (bw / video.videoWidth) * w;
+          const sh = (bh / video.videoHeight) * h;
+          ctx.strokeStyle = "#f59e0b";
+          ctx.fillStyle = "rgba(245, 158, 11, 0.12)";
+          ctx.fillRect(sx, sy, sw, sh);
+          ctx.strokeRect(sx, sy, sw, sh);
+          const label = `${obj.class} ${Math.round(obj.score * 100)}%`;
+          ctx.font = "12px sans-serif";
+          const textW = ctx.measureText(label).width;
+          const textX = sx;
+          const textY = Math.max(14, sy - 4);
+          ctx.fillStyle = "#f59e0b";
+          ctx.fillRect(textX, textY - 12, textW + 8, 14);
+          ctx.fillStyle = "#111827";
+          ctx.fillText(label, textX + 4, textY - 2);
+        }
+      } else {
+        objectBoxesRef.current = [];
+        if (!objectOn && objects.length) setObjects([]);
+      }
+
       rafRef.current = requestAnimationFrame(renderLoop);
     };
 
@@ -288,13 +366,17 @@ export default function App() {
       if (detectorRef.current?.close) detectorRef.current.close();
       if (gestureRef.current?.close) gestureRef.current.close();
     };
-  }, [faceBoxesOn, gestureOn]);
+  }, [faceBoxesOn, gestureOn, objectOn, performanceMode]);
 
   useEffect(() => {
     fetch("/api/health")
       .then((r) => safeJson(r))
       .then((data) => {
-        setStatus({ text: data.message, state: data.ok ? "normal" : "error" });
+        console.log("[health]", data.message);
+        setStatus({
+          text: data.ok ? "System ready." : "Ollama connection issue. Check server logs.",
+          state: data.ok ? "normal" : "error",
+        });
         if (data.models?.length) {
           setModels(data.models);
           setSelectedModel(data.models[0]);
@@ -418,8 +500,7 @@ export default function App() {
   return (
     <div className={styles.app}>
       <header className={styles.header}>
-        <span className={styles.headerTitle}>Emotion Recognizer</span>
-        <span className={styles.headerBadge}>Powered by Ollama AI</span>
+        <span className={styles.headerTitle}>Mood Mirror AI</span>
       </header>
 
       <div className={`${styles.status} ${statusClass}`}>{status.text}</div>
@@ -440,7 +521,7 @@ export default function App() {
               Gesture: {currentGesture}
             </div>
             <div className={styles.metricsDebug}>
-              FPS: {Math.round(detectionFps)} | Latency: {analysisLatencyMs}ms
+              FPS: {Math.round(detectionFps)} | Latency: {analysisLatencyMs}ms | Objects: {objects.length}
             </div>
           </div>
         </section>
@@ -499,6 +580,21 @@ export default function App() {
               </div>
             </div>
           )}
+
+          {objects.length > 0 && (
+            <div className={styles.peoplePanel}>
+              <p className={styles.panelTitle}>Objects</p>
+              <div className={styles.peopleList}>
+                {objects.map((o, idx) => (
+                  <div key={`${o.class}-${idx}`} className={styles.personRow}>
+                    <span className={styles.personTag}>O{idx + 1}</span>
+                    <span className={styles.personEmotion}>{o.class}</span>
+                    <span className={styles.personConf}>{Math.round(o.score * 100)}%</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </main>
 
@@ -515,6 +611,19 @@ export default function App() {
         <button className={`${styles.btnToggle} ${gestureOn ? styles.btnToggleOn : ""}`} onClick={() => setGestureOn((v) => !v)}>
           {gestureOn ? "🖐 Gestures: ON" : "🖐 Gestures: OFF"}
         </button>
+        <button className={`${styles.btnToggle} ${objectOn ? styles.btnToggleOn : ""}`} onClick={() => setObjectOn((v) => !v)}>
+          {objectOn ? "📦 Objects: ON" : "📦 Objects: OFF"}
+        </button>
+        <span className={styles.modelLabel}>Mode:</span>
+        <select
+          className={styles.select}
+          value={performanceMode}
+          onChange={(e) => setPerformanceMode(e.target.value)}
+        >
+          <option value="balanced">Balanced</option>
+          <option value="fast">Fast</option>
+          <option value="object">Object Demo</option>
+        </select>
         <span className={styles.modelLabel}>Model:</span>
         <select className={styles.select} value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}>
           {models.map((m) => (
