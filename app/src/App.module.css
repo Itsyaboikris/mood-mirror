@@ -110,6 +110,7 @@
   height: 100%;
   display: block;
   object-fit: cover;
+  transform: scaleX(-1);
 }
 
 .faceOverlay {

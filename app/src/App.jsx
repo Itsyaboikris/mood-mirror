@@ -8,8 +8,7 @@ const EMOJI = {
 };
 
 const AUTO_INTERVAL_MS = 5000;
-const HISTORY_MAX = 8;
-const MAX_ANALYZE_FACES = 2;
+const HISTORY_MAX = 10;
 const MAX_OBJECTS = 3;
 const OBJECT_UNCERTAIN_THRESHOLD = 0.45;
 const PERFORMANCE_MODES = {
@@ -138,13 +137,57 @@ export default function App() {
   }, [performanceMode]);
 
   useEffect(() => {
-    navigator.mediaDevices
-      .getUserMedia({ video: { width: 640, height: 480 }, audio: false })
-      .then((stream) => {
-        if (videoRef.current) videoRef.current.srcObject = stream;
-      })
-      .catch((err) => setStatus({ text: `Camera error: ${err.message}`, state: "error" }));
-    return () => videoRef.current?.srcObject?.getTracks().forEach((t) => t.stop());
+    let activeStream = null;
+
+    const startCamera = async () => {
+      try {
+        const preferredConstraints = {
+          video: {
+            width: { ideal: 1920, min: 1280 },
+            height: { ideal: 1080, min: 720 },
+            frameRate: { ideal: 30, max: 60 },
+            facingMode: "user",
+          },
+          audio: false,
+        };
+        const fallbackConstraints = {
+          video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
+          audio: false,
+        };
+
+        let stream;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia(preferredConstraints);
+        } catch {
+          stream = await navigator.mediaDevices.getUserMedia(fallbackConstraints);
+        }
+        activeStream = stream;
+
+        const [track] = stream.getVideoTracks();
+        if (track?.applyConstraints) {
+          try {
+            await track.applyConstraints({
+              advanced: [
+                { focusMode: "continuous" },
+                { exposureMode: "continuous" },
+                { whiteBalanceMode: "continuous" },
+              ],
+            });
+          } catch {
+            // Ignore unsupported camera controls.
+          }
+        }
+
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+        }
+      } catch (err) {
+        setStatus({ text: `Camera error: ${err.message}`, state: "error" });
+      }
+    };
+
+    startCamera();
+    return () => activeStream?.getTracks().forEach((t) => t.stop());
   }, []);
 
   useEffect(() => {
@@ -153,34 +196,52 @@ export default function App() {
     const initDetector = async () => {
       try {
         const fileset = await FilesetResolver.forVisionTasks(
-          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.34/wasm"
         );
-        const detector = await FaceDetector.createFromOptions(fileset, {
+        const faceDetectorOptions = (delegate) => ({
           baseOptions: {
             modelAssetPath:
               "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
-            delegate: "GPU",
+            delegate,
           },
           runningMode: "VIDEO",
           minDetectionConfidence: 0.35,
         });
-        if (!cancelled) {
-          detectorRef.current = detector;
+        let detector;
+        try {
+          detector = await FaceDetector.createFromOptions(fileset, faceDetectorOptions("GPU"));
+        } catch {
+          detector = await FaceDetector.createFromOptions(fileset, faceDetectorOptions("CPU"));
         }
+        if (!cancelled) detectorRef.current = detector;
 
-        const gesture = await GestureRecognizer.createFromOptions(fileset, {
+        const gestureOptions = (delegate) => ({
           baseOptions: {
             modelAssetPath:
               "https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task",
-            delegate: "GPU",
+            delegate,
           },
           runningMode: "VIDEO",
           numHands: 1,
         });
+        let gesture;
+        try {
+          gesture = await GestureRecognizer.createFromOptions(fileset, gestureOptions("GPU"));
+        } catch {
+          gesture = await GestureRecognizer.createFromOptions(fileset, gestureOptions("CPU"));
+        }
         if (!cancelled) {
           gestureRef.current = gesture;
+          setDetectorInfo("Face+Gesture: MediaPipe");
         }
+      } catch (err) {
+        if (!cancelled) {
+          setDetectorInfo("Detector: unavailable");
+          setStatus({ text: `Face detection unavailable: ${err.message}`, state: "error" });
+        }
+      }
 
+      try {
         const tf = await import("@tensorflow/tfjs");
         await tf.ready();
         const cocoSsd = await import("@tensorflow-models/coco-ssd");
@@ -191,8 +252,8 @@ export default function App() {
         }
       } catch (err) {
         if (!cancelled) {
-          setDetectorInfo("Detector: unavailable");
-          setStatus({ text: `Face detection unavailable: ${err.message}`, state: "error" });
+          setDetectorInfo((prev) => `${prev} (objects unavailable)`);
+          console.warn("Object detector failed to load:", err.message);
         }
       }
     };
@@ -214,6 +275,7 @@ export default function App() {
 
       const ctx = canvas.getContext("2d");
       ctx.clearRect(0, 0, w, h);
+      const mirrorX = (x, width = 0) => w - x - width;
 
       if (lastFrameTsRef.current > 0) {
         const delta = performance.now() - lastFrameTsRef.current;
@@ -254,8 +316,9 @@ export default function App() {
         ctx.strokeStyle = "#06b6d4";
         ctx.fillStyle = "rgba(6, 182, 212, 0.12)";
         for (const box of boxesRef.current) {
-          ctx.fillRect(box.x, box.y, box.width, box.height);
-          ctx.strokeRect(box.x, box.y, box.width, box.height);
+          const mx = mirrorX(box.x, box.width);
+          ctx.fillRect(mx, box.y, box.width, box.height);
+          ctx.strokeRect(mx, box.y, box.width, box.height);
         }
       } else if (!faceBoxesOn && faceCount !== 0) {
         setFaceCount(0);
@@ -283,7 +346,7 @@ export default function App() {
           let maxX = 0;
           let maxY = 0;
           for (const lm of handLandmarksRef.current) {
-            const px = lm.x * w;
+            const px = mirrorX(lm.x * w);
             const py = lm.y * h;
             minX = Math.min(minX, lm.x);
             minY = Math.min(minY, lm.y);
@@ -293,7 +356,7 @@ export default function App() {
             ctx.arc(px, py, 2.4, 0, Math.PI * 2);
             ctx.fill();
           }
-          const bx = minX * w;
+          const bx = mirrorX(maxX * w);
           const by = minY * h;
           const bw = (maxX - minX) * w;
           const bh = (maxY - minY) * h;
@@ -335,14 +398,15 @@ export default function App() {
           const sy = (y / video.videoHeight) * h;
           const sw = (bw / video.videoWidth) * w;
           const sh = (bh / video.videoHeight) * h;
+          const mx = mirrorX(sx, sw);
           ctx.strokeStyle = "#f59e0b";
           ctx.fillStyle = "rgba(245, 158, 11, 0.12)";
-          ctx.fillRect(sx, sy, sw, sh);
-          ctx.strokeRect(sx, sy, sw, sh);
+          ctx.fillRect(mx, sy, sw, sh);
+          ctx.strokeRect(mx, sy, sw, sh);
           const label = `${obj.class} ${Math.round(obj.score * 100)}%`;
           ctx.font = "12px sans-serif";
           const textW = ctx.measureText(label).width;
-          const textX = sx;
+          const textX = mx;
           const textY = Math.max(14, sy - 4);
           ctx.fillStyle = "#f59e0b";
           ctx.fillRect(textX, textY - 12, textW + 8, 14);
@@ -410,46 +474,33 @@ export default function App() {
     const startedAt = performance.now();
 
     try {
-      const faceBoxes = (boxesRef.current || []).slice(0, MAX_ANALYZE_FACES);
-      const regions = faceBoxes.length > 0 ? faceBoxes : [{ nx: 0, ny: 0, nw: 1, nh: 1 }];
-      setStatus({ text: `Analyzing ${regions.length} face(s) with ${selectedModel}…`, state: "analyzing" });
+      const detectedCount = (boxesRef.current || []).length;
+      setStatus({ text: `Analyzing ${detectedCount > 0 ? detectedCount : "all"} face(s) with ${selectedModel}…`, state: "analyzing" });
 
-      const cropToDataUrl = (r) => {
-        const cropCanvas = document.createElement("canvas");
-        const sx = clamp(Math.floor(r.nx * video.videoWidth), 0, video.videoWidth - 1);
-        const sy = clamp(Math.floor(r.ny * video.videoHeight), 0, video.videoHeight - 1);
-        const sw = clamp(Math.floor(r.nw * video.videoWidth), 1, video.videoWidth - sx);
-        const sh = clamp(Math.floor(r.nh * video.videoHeight), 1, video.videoHeight - sy);
-        cropCanvas.width = sw;
-        cropCanvas.height = sh;
-        cropCanvas.getContext("2d").drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
-        return cropCanvas.toDataURL("image/jpeg", 0.85);
-      };
-
-      const requests = regions.map(async (region, idx) => {
-        const faceDataUrl = cropToDataUrl(region);
-        const res = await fetch("/api/analyze", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ image: faceDataUrl, model: selectedModel }),
-          signal: AbortSignal.timeout(45_000),
-        });
-        const result = await safeJson(res);
-        return {
-          idx,
-          ok: !!result.success,
-          emotion: result.emotion || "unknown",
-          description: result.description || "",
-          confidence: Number(result.confidence ?? 50),
-          error: result.error || "",
-          snapshot: faceDataUrl,
-        };
+      const res = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: dataUrl, model: selectedModel }),
+        signal: AbortSignal.timeout(45_000),
       });
-
-      const results = await Promise.all(requests);
-      const good = results.filter((r) => r.ok);
-      setPersonResults(good);
+      const result = await safeJson(res);
       setAnalysisLatencyMs(Math.round(performance.now() - startedAt));
+
+      if (!result.success) {
+        setStatus({ text: result.error || "Analysis failed", state: "error" });
+        return;
+      }
+
+      const good = (result.faces || []).map((f, idx) => ({
+        idx,
+        ok: true,
+        emotion: f.emotion || "unknown",
+        description: f.description || "",
+        confidence: Number(f.confidence ?? 50),
+        error: "",
+        snapshot: dataUrl,
+      }));
+      setPersonResults(good);
 
       if (good.length > 0) {
         const primary = good[0];
@@ -472,8 +523,7 @@ export default function App() {
           state: "normal",
         });
       } else {
-        const firstError = results[0]?.error || "Analysis failed";
-        setStatus({ text: firstError, state: "error" });
+        setStatus({ text: "No faces found in frame", state: "error" });
       }
     } catch (err) {
       setStatus({ text: err.message, state: "error" });

@@ -66,12 +66,14 @@ async function runStartupOllamaCheck() {
 }
 
 const EMOTION_PROMPT =
-  "Look at this image of a person's face. " +
-  "Respond with a JSON object containing exactly three keys:\n" +
+  "Look at this image. Identify every visible face and analyse the expression of each person.\n" +
+  'Respond with a JSON object with a single key "faces" whose value is an array.\n' +
+  "Each element in the array represents one person and must contain exactly three keys:\n" +
   '  "emotion": a single word for the dominant emotion ' +
   "(happy, sad, angry, surprised, confused, disgusted, fearful, neutral),\n" +
-  '  "description": one short sentence describing what you observe,\n' +
-  '  "confidence": integer from 0 to 100 representing confidence in your emotion label.\n' +
+  '  "description": one short sentence describing what you observe about that person,\n' +
+  '  "confidence": integer from 0 to 100 representing your confidence in the emotion label.\n' +
+  'If there are no visible faces return {"faces": []}.\n' +
   "Return only the JSON object, no extra text.";
 
 app.use(cors());
@@ -156,28 +158,29 @@ app.post("/api/analyze", async (req, res) => {
     const rawText = data.response || "";
     logStep(reqId, "analyze.ollama_json_received", `response_chars=${rawText.length}`);
 
-    let emotion = "neutral";
-    let description = rawText;
-    let confidence = 50;
+    let faces = [];
 
     try {
       const parsed = JSON.parse(rawText);
-      emotion = String(parsed.emotion || "neutral").toLowerCase().trim();
-      description = String(parsed.description || "").trim();
-      const parsedConfidence = Number(parsed.confidence);
-      if (Number.isFinite(parsedConfidence)) {
-        confidence = Math.max(0, Math.min(100, Math.round(parsedConfidence)));
-      }
-      logStep(reqId, "analyze.parse_json.ok", `emotion=${emotion}`);
+      const raw = Array.isArray(parsed.faces) ? parsed.faces : [];
+      faces = raw.map((f) => {
+        const confidence = Number(f.confidence);
+        return {
+          emotion: String(f.emotion || "neutral").toLowerCase().trim(),
+          description: String(f.description || "").trim(),
+          confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(100, Math.round(confidence))) : 50,
+        };
+      });
+      logStep(reqId, "analyze.parse_json.ok", `faces=${faces.length}`);
     } catch {
-      // model didn't return valid JSON despite format:"json"
+      // model didn't return valid JSON — treat the whole response as a single neutral face
       const firstWord = rawText.trim().split(/\s+/)[0] || "neutral";
-      emotion = firstWord.toLowerCase().replace(/[.,!]+$/, "");
-      logStep(reqId, "analyze.parse_json.fallback", `emotion=${emotion}`);
+      faces = [{ emotion: firstWord.toLowerCase().replace(/[.,!]+$/, ""), description: rawText.trim(), confidence: 50 }];
+      logStep(reqId, "analyze.parse_json.fallback", `faces=1 emotion=${faces[0].emotion}`);
     }
 
     logStep(reqId, "analyze.success");
-    res.json({ success: true, emotion, description, confidence, raw: rawText });
+    res.json({ success: true, faces, raw: rawText });
   } catch (err) {
     logStep(reqId, "analyze.exception", String(err?.message || err));
     const isTimeout = String(err?.message || "").toLowerCase().includes("aborted");
