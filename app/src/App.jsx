@@ -105,6 +105,8 @@ export default function App() {
   const objectBoxesRef = useRef([]);
   const analyzingRef = useRef(false);
   const autoTimerRef = useRef(null);
+  const lastFxGestureRef = useRef(null);
+  const lastFxTsRef = useRef(0);
 
   const [status, setStatus] = useState({ text: "Checking Ollama…", state: "normal" });
   const [models, setModels] = useState(FALLBACK_MODELS);
@@ -128,6 +130,7 @@ export default function App() {
   const [personResults, setPersonResults] = useState([]);
   const [objects, setObjects] = useState([]);
   const [history, setHistory] = useState([]);
+  const [gestureFx, setGestureFx] = useState(null);
 
   useEffect(() => {
     const mode = PERFORMANCE_MODES[performanceMode] || PERFORMANCE_MODES.balanced;
@@ -333,6 +336,25 @@ export default function App() {
             const topGesture = result?.gestures?.[0]?.[0]?.categoryName || null;
             const accepted = topGesture && ALLOWED_GESTURES.has(topGesture) ? topGesture : null;
             setCurrentGesture(accepted ? GESTURE_LABELS[accepted] : "None");
+            const canTriggerFx =
+              accepted &&
+              (accepted === "Victory" || accepted === "Thumb_Up" || accepted === "Thumb_Down" || accepted === "ILoveYou") &&
+              (accepted !== lastFxGestureRef.current || now - lastFxTsRef.current > 1600);
+            if (canTriggerFx) {
+              lastFxGestureRef.current = accepted;
+              lastFxTsRef.current = now;
+              const glyph = accepted === "Victory" ? "🎈" : accepted === "Thumb_Up" ? "🎉" : accepted === "Thumb_Down" ? "😢" : "✨";
+              setGestureFx({
+                id: Date.now(),
+                glyph,
+                pieces: Array.from({ length: 12 }, (_, i) => ({
+                  id: i,
+                  left: 8 + Math.random() * 84,
+                  delay: Math.random() * 0.25,
+                  duration: 1.4 + Math.random() * 0.8,
+                })),
+              });
+            }
             handLandmarksRef.current = result?.landmarks?.[0] || [];
           } catch {
             // Ignore per-frame gesture failures
@@ -573,6 +595,19 @@ export default function App() {
             <div className={styles.metricsDebug}>
               FPS: {Math.round(detectionFps)} | Latency: {analysisLatencyMs}ms | Objects: {objects.length}
             </div>
+            {gestureFx && (
+              <div key={gestureFx.id} className={styles.gestureFxLayer}>
+                {gestureFx.pieces.map((p) => (
+                  <span
+                    key={`${gestureFx.id}-${p.id}`}
+                    className={styles.gestureFxPiece}
+                    style={{ left: `${p.left}%`, animationDelay: `${p.delay}s`, animationDuration: `${p.duration}s` }}
+                  >
+                    {gestureFx.glyph}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         </section>
 
