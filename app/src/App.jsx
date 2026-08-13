@@ -9,7 +9,7 @@ const EMOJI = {
 
 const AUTO_INTERVAL_MS = 5000;
 const HISTORY_MAX = 10;
-const MAX_OBJECTS = 3;
+const MAX_OBJECTS = 10;
 const OBJECT_UNCERTAIN_THRESHOLD = 0.45;
 const PERFORMANCE_MODES = {
   balanced: { label: "Balanced", face: true, gesture: true, object: true, faceMs: 100, gestureMs: 150, objectMs: 300 },
@@ -34,7 +34,12 @@ const GESTURE_LABELS = {
   Closed_Fist: "✊ Fist",
   Pointing_Up: "☝️ Pointing Up",
   ILoveYou: "🤟 I Love You",
+  Finger_Heart: "🫰 Finger Heart",
 };
+const GESTURE_MIN_SCORE = 0.72;
+const GESTURE_CONFIRM_FRAMES = 3;
+const GESTURE_CLEAR_FRAMES = 4;
+const GESTURE_REACTION_HOLD_MS = 2000;
 
 async function safeJson(response) {
   const text = await response.text();
@@ -52,6 +57,58 @@ function timeLabel() {
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function distance2d(a, b) {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+function angleDeg(a, b, c) {
+  const abx = a.x - b.x;
+  const aby = a.y - b.y;
+  const cbx = c.x - b.x;
+  const cby = c.y - b.y;
+  const dot = abx * cbx + aby * cby;
+  const mag1 = Math.sqrt(abx * abx + aby * aby);
+  const mag2 = Math.sqrt(cbx * cbx + cby * cby);
+  if (!mag1 || !mag2) return 180;
+  const cos = clamp(dot / (mag1 * mag2), -1, 1);
+  return (Math.acos(cos) * 180) / Math.PI;
+}
+
+function isFingerHeartGesture(landmarks) {
+  if (!Array.isArray(landmarks) || landmarks.length < 21) return false;
+  const handSize = Math.max(distance2d(landmarks[0], landmarks[9]), 0.001);
+  const wrist = landmarks[0];
+
+  const indexTip = landmarks[8];
+  const middleTip = landmarks[12];
+  const ringTip = landmarks[16];
+  const pinkyTip = landmarks[20];
+
+  const indexPip = landmarks[6];
+  const middlePip = landmarks[10];
+  const ringPip = landmarks[14];
+  const pinkyPip = landmarks[18];
+
+  const indexExtended = distance2d(indexTip, wrist) > distance2d(indexPip, wrist) * 1.05;
+  const indexNotFullyStraight = angleDeg(landmarks[5], landmarks[6], landmarks[8]) > 120;
+  const middleCurled = distance2d(middleTip, wrist) < distance2d(middlePip, wrist) * 1.12;
+  const ringCurled = distance2d(ringTip, wrist) < distance2d(ringPip, wrist) * 1.12;
+  const pinkyCurled = distance2d(pinkyTip, wrist) < distance2d(pinkyPip, wrist) * 1.15;
+  const thumbBent = angleDeg(landmarks[2], landmarks[3], landmarks[4]) < 170;
+
+  const thumbToIndex = Math.min(
+    distance2d(landmarks[4], landmarks[6]),
+    distance2d(landmarks[4], landmarks[7]),
+    distance2d(landmarks[4], landmarks[8])
+  );
+  const thumbNearIndex = thumbToIndex < handSize * 0.72;
+  const curlCount = [middleCurled, ringCurled, pinkyCurled].filter(Boolean).length;
+
+  return indexExtended && indexNotFullyStraight && thumbBent && thumbNearIndex && curlCount >= 2;
 }
 
 function isMostlyBlackFrame(canvas) {
@@ -77,12 +134,14 @@ async function captureStableFrame(video, maxAttempts = 3) {
       await new Promise((r) => setTimeout(r, 80));
       continue;
     }
+    const maxSide = 640;
+    const scale = Math.min(1, maxSide / Math.max(video.videoWidth, video.videoHeight));
     const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    canvas.getContext("2d").drawImage(video, 0, 0);
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+    canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+    canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
     if (!isMostlyBlackFrame(canvas)) {
-      return canvas.toDataURL("image/jpeg", 0.85);
+      return canvas.toDataURL("image/jpeg", 0.7);
     }
     await new Promise((r) => setTimeout(r, 80));
   }
@@ -107,6 +166,12 @@ export default function App() {
   const autoTimerRef = useRef(null);
   const lastFxGestureRef = useRef(null);
   const lastFxTsRef = useRef(0);
+  const reactionGestureRef = useRef(null);
+  const reactionGestureStartTsRef = useRef(0);
+  const gestureCandidateRef = useRef(null);
+  const gestureCandidateFramesRef = useRef(0);
+  const gestureMissFramesRef = useRef(0);
+  const confirmedGestureRef = useRef(null);
 
   const [status, setStatus] = useState({ text: "Checking Ollama…", state: "normal" });
   const [models, setModels] = useState(FALLBACK_MODELS);
@@ -333,17 +398,75 @@ export default function App() {
           lastGestureTsRef.current = now;
           try {
             const result = gestureRef.current.recognizeForVideo(video, now);
-            const topGesture = result?.gestures?.[0]?.[0]?.categoryName || null;
-            const accepted = topGesture && ALLOWED_GESTURES.has(topGesture) ? topGesture : null;
-            setCurrentGesture(accepted ? GESTURE_LABELS[accepted] : "None");
+            const topCategory = result?.gestures?.[0]?.[0] || null;
+            const topGesture = topCategory?.categoryName || null;
+            const topScore = Number(topCategory?.score ?? topCategory?.categoryScore ?? 0);
+            const accepted =
+              topGesture && topScore >= GESTURE_MIN_SCORE && ALLOWED_GESTURES.has(topGesture) ? topGesture : null;
+            const landmarks = result?.landmarks?.[0] || [];
+            const customGesture = isFingerHeartGesture(landmarks) ? "Finger_Heart" : null;
+            const rawGesture = customGesture || accepted;
+            if (rawGesture) {
+              gestureMissFramesRef.current = 0;
+              if (gestureCandidateRef.current === rawGesture) {
+                gestureCandidateFramesRef.current += 1;
+              } else {
+                gestureCandidateRef.current = rawGesture;
+                gestureCandidateFramesRef.current = 1;
+              }
+              if (gestureCandidateFramesRef.current >= GESTURE_CONFIRM_FRAMES) {
+                confirmedGestureRef.current = rawGesture;
+              }
+            } else {
+              gestureMissFramesRef.current += 1;
+              if (gestureMissFramesRef.current >= GESTURE_CLEAR_FRAMES) {
+                gestureCandidateRef.current = null;
+                gestureCandidateFramesRef.current = 0;
+                confirmedGestureRef.current = null;
+              }
+            }
+            const detectedGesture = confirmedGestureRef.current;
+            setCurrentGesture(detectedGesture ? GESTURE_LABELS[detectedGesture] : "None");
+            if (detectedGesture) {
+              if (reactionGestureRef.current !== detectedGesture) {
+                reactionGestureRef.current = detectedGesture;
+                reactionGestureStartTsRef.current = now;
+              }
+            } else {
+              reactionGestureRef.current = null;
+              reactionGestureStartTsRef.current = 0;
+            }
+
+            const heldLongEnough =
+              detectedGesture &&
+              reactionGestureRef.current === detectedGesture &&
+              reactionGestureStartTsRef.current > 0 &&
+              now - reactionGestureStartTsRef.current >= GESTURE_REACTION_HOLD_MS;
+
             const canTriggerFx =
-              accepted &&
-              (accepted === "Victory" || accepted === "Thumb_Up" || accepted === "Thumb_Down" || accepted === "ILoveYou") &&
-              (accepted !== lastFxGestureRef.current || now - lastFxTsRef.current > 1600);
+              detectedGesture &&
+              heldLongEnough &&
+              (
+                detectedGesture === "Victory" ||
+                detectedGesture === "Thumb_Up" ||
+                detectedGesture === "Thumb_Down" ||
+                detectedGesture === "ILoveYou" ||
+                detectedGesture === "Finger_Heart"
+              ) &&
+              (detectedGesture !== lastFxGestureRef.current || now - lastFxTsRef.current > 1600);
             if (canTriggerFx) {
-              lastFxGestureRef.current = accepted;
+              lastFxGestureRef.current = detectedGesture;
               lastFxTsRef.current = now;
-              const glyph = accepted === "Victory" ? "🎈" : accepted === "Thumb_Up" ? "🎉" : accepted === "Thumb_Down" ? "😢" : "✨";
+              const glyph =
+                detectedGesture === "Victory"
+                  ? "🎈"
+                  : detectedGesture === "Thumb_Up"
+                    ? "🎉"
+                    : detectedGesture === "Thumb_Down"
+                      ? "😢"
+                      : detectedGesture === "Finger_Heart"
+                        ? "💖"
+                        : "✨";
               setGestureFx({
                 id: Date.now(),
                 glyph,
@@ -355,7 +478,7 @@ export default function App() {
                 })),
               });
             }
-            handLandmarksRef.current = result?.landmarks?.[0] || [];
+            handLandmarksRef.current = landmarks;
           } catch {
             // Ignore per-frame gesture failures
           }
@@ -399,7 +522,7 @@ export default function App() {
             .detect(video)
             .then((predictions) => {
               const top = (predictions || [])
-                .filter((p) => p.score >= 0.35)
+                .filter((p) => p.score >= 0.30)
                 .sort((a, b) => b.score - a.score)
                 .slice(0, MAX_OBJECTS)
                 .map((p) => ({
@@ -465,7 +588,11 @@ export default function App() {
         });
         if (data.models?.length) {
           setModels(data.models);
-          setSelectedModel(data.models[0]);
+          const preferred =
+            data.models.find((m) => m.includes("minicpm")) ||
+            data.models.find((m) => m.includes("qwen")) ||
+            data.models[0];
+          setSelectedModel(preferred);
         }
       })
       .catch((err) => setStatus({ text: `Server error: ${err.message}`, state: "error" }));
@@ -503,7 +630,7 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ image: dataUrl, model: selectedModel }),
-        signal: AbortSignal.timeout(45_000),
+        signal: AbortSignal.timeout(120_000),
       });
       const result = await safeJson(res);
       setAnalysisLatencyMs(Math.round(performance.now() - startedAt));

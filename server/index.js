@@ -30,51 +30,62 @@ async function runStartupOllamaCheck() {
 
     const tags = await tagsRes.json();
     const models = (tags.models || []).map((m) => m.name);
-    logStep(reqId, "startup.health.models", `count=${models.length} names=${models.join(", ")}`);
-
-    const testModel = models.find((m) => m.includes("vision")) || models[0];
-    if (!testModel) {
-      logStep(reqId, "startup.health.skip_generate", "no models available");
-      return;
-    }
-
-    logStep(reqId, "startup.generate.start", `model=${testModel}`);
-    const genRes = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: testModel,
-        prompt: "Reply with exactly: ok",
-        stream: false,
-      }),
-      signal: AbortSignal.timeout(20_000),
-    });
-    logStep(reqId, "startup.generate.status", `status=${genRes.status}`);
-
-    if (!genRes.ok) {
-      const text = await genRes.text();
-      logStep(reqId, "startup.generate.error", text.slice(0, 300));
-      return;
-    }
-
-    const data = await genRes.json();
-    const preview = String(data.response || "").trim().slice(0, 80);
-    logStep(reqId, "startup.generate.ok", `response_preview=${preview}`);
+    logStep(reqId, "startup.health.ok", `count=${models.length} names=${models.join(", ")}`);
   } catch (err) {
     logStep(reqId, "startup.health.exception", String(err?.message || err));
   }
 }
 
-const EMOTION_PROMPT =
-  "Look at this image. Identify every visible face and analyse the expression of each person.\n" +
-  'Respond with a JSON object with a single key "faces" whose value is an array.\n' +
-  "Each element in the array represents one person and must contain exactly three keys:\n" +
-  '  "emotion": a single word for the dominant emotion ' +
-  "(happy, sad, angry, surprised, confused, disgusted, fearful, neutral),\n" +
-  '  "description": one short sentence describing what you observe about that person,\n' +
-  '  "confidence": integer from 0 to 100 representing your confidence in the emotion label.\n' +
-  'If there are no visible faces return {"faces": []}.\n' +
-  "Return only the JSON object, no extra text.";
+const EMOTION_SYSTEM =
+  'You are a face emotion analyser. Always respond with only a JSON object, no extra text. ' +
+  'Schema: {"faces":[{"emotion":"happy","description":"<one sentence>","confidence":83}]}. ' +
+  'emotion MUST be a single string word from: happy, sad, angry, surprised, confused, disgusted, fearful, neutral. ' +
+  'Never return emotion as an object or score map. confidence is an integer 0-100. ' +
+  'No faces = {"faces":[]}.';
+
+const EMOTION_USER = "Identify every visible face and return the JSON.";
+
+const ALLOWED_EMOTIONS = ["happy", "sad", "angry", "surprised", "confused", "disgusted", "fearful", "neutral"];
+
+function scoreToNumber(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const text = String(value ?? "").trim().replace("%", "");
+  const n = Number(text);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function normalizeFace(f = {}) {
+  let emotion = "neutral";
+  let confidence = Number(f.confidence);
+
+  if (typeof f.emotion === "string") {
+    emotion = f.emotion.toLowerCase().trim();
+  } else if (f.emotion && typeof f.emotion === "object") {
+    let bestKey = "neutral";
+    let bestScore = -Infinity;
+    for (const [key, value] of Object.entries(f.emotion)) {
+      const score = scoreToNumber(value);
+      if (score > bestScore) {
+        bestScore = score;
+        bestKey = key.toLowerCase().trim();
+      }
+    }
+    emotion = bestKey;
+    if (!Number.isFinite(confidence)) {
+      confidence = bestScore <= 1 ? bestScore * 100 : bestScore;
+    }
+  }
+
+  if (!ALLOWED_EMOTIONS.includes(emotion)) emotion = "neutral";
+  if (!Number.isFinite(confidence)) confidence = 50;
+  if (confidence > 0 && confidence <= 1) confidence *= 100;
+
+  return {
+    emotion,
+    description: String(f.description || "").trim(),
+    confidence: Math.max(0, Math.min(100, Math.round(confidence))),
+  };
+}
 
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
@@ -133,16 +144,20 @@ app.post("/api/analyze", async (req, res) => {
   logStep(reqId, "analyze.payload_ready", `model=${model} image_chars=${imageB64.length}`);
 
   try {
-    logStep(reqId, "analyze.ollama_request.start", `${OLLAMA_BASE_URL}/api/generate`);
-    const ollamaRes = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
+    logStep(reqId, "analyze.ollama_request.start", `${OLLAMA_BASE_URL}/api/chat`);
+    const ollamaRes = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model,
-        prompt: EMOTION_PROMPT,
-        images: [imageB64],
+        messages: [
+          { role: "system", content: EMOTION_SYSTEM },
+          { role: "user", content: EMOTION_USER, images: [imageB64] },
+        ],
         stream: false,
         format: "json",
+        keep_alive: "30m",
+        options: { temperature: 0.2, num_predict: 256 },
       }),
       signal: AbortSignal.timeout(120_000),
     });
@@ -155,7 +170,13 @@ app.post("/api/analyze", async (req, res) => {
     }
 
     const data = await ollamaRes.json();
-    const rawText = data.response || "";
+    console.log("[analyze] ollama raw data:", JSON.stringify(data).slice(0, 500));
+    const rawText =
+      typeof data.message?.content === "string"
+        ? data.message.content
+        : data.message?.content != null
+          ? JSON.stringify(data.message.content)
+          : data.response || "";
     logStep(reqId, "analyze.ollama_json_received", `response_chars=${rawText.length}`);
 
     let faces = [];
@@ -163,15 +184,8 @@ app.post("/api/analyze", async (req, res) => {
     try {
       const parsed = JSON.parse(rawText);
       const raw = Array.isArray(parsed.faces) ? parsed.faces : [];
-      faces = raw.map((f) => {
-        const confidence = Number(f.confidence);
-        return {
-          emotion: String(f.emotion || "neutral").toLowerCase().trim(),
-          description: String(f.description || "").trim(),
-          confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(100, Math.round(confidence))) : 50,
-        };
-      });
-      logStep(reqId, "analyze.parse_json.ok", `faces=${faces.length}`);
+      faces = raw.map(normalizeFace);
+      logStep(reqId, "analyze.parse_json.ok", `faces=${faces.length} emotion=${faces[0]?.emotion ?? "none"}`);
     } catch {
       // model didn't return valid JSON — treat the whole response as a single neutral face
       const firstWord = rawText.trim().split(/\s+/)[0] || "neutral";
