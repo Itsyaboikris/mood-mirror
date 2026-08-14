@@ -208,19 +208,9 @@ export default function App() {
   const [moodColor, setMoodColor] = useState("#FF3D7F");
   const [toastMsg, setToastMsg] = useState("");
   const [toastVisible, setToastVisible] = useState(false);
-  const [clockStr, setClockStr] = useState(() =>
-    new Date().toLocaleTimeString([], { hour12: false })
-  );
 
   const toastTimerRef = useRef(null);
   const feedFrameRef = useRef(null);
-
-  useEffect(() => {
-    const id = setInterval(() => {
-      setClockStr(new Date().toLocaleTimeString([], { hour12: false }));
-    }, 1000);
-    return () => clearInterval(id);
-  }, []);
 
   const showToast = useCallback((msg) => {
     setToastMsg(msg);
@@ -254,6 +244,8 @@ export default function App() {
   }, []);
   const [history, setHistory] = useState([]);
   const [gestureFx, setGestureFx] = useState(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [historyDetail, setHistoryDetail] = useState(null);
 
   useEffect(() => {
     const mode = PERFORMANCE_MODES[performanceMode] || PERFORMANCE_MODES.balanced;
@@ -774,19 +766,19 @@ export default function App() {
           </div>
         </div>
         <div className={styles.headerRight}>
-          <span className={styles.clock}>{clockStr}</span>
-          <span className={styles.tryBadge}>👉 TRY ME</span>
+          <span className={`${styles.statusPill} ${pillClass}`}>
+            <span className={styles.statusDot} />
+            {status.text}
+          </span>
+          <button
+            className={`${styles.btn} ${styles.btnNav} ${styles.btnSettingsIcon}`}
+            onClick={() => setSettingsOpen(true)}
+            title="Settings"
+          >
+            ⚙
+          </button>
         </div>
       </header>
-
-      {/* Status / hero line */}
-      <div className={styles.heroLine}>
-        <span className={`${styles.statusPill} ${pillClass}`}>
-          <span className={styles.statusDot} />
-          {status.text}
-        </span>
-        <span className={styles.heroSub}>Running fully on-device — no data leaves this laptop.</span>
-      </div>
 
       {/* Main grid */}
       <div className={styles.grid}>
@@ -797,7 +789,6 @@ export default function App() {
           <div className={styles.feedFrame} ref={feedFrameRef} onClick={() => { if (!analyzing) analyze(); }}>
             <video ref={videoRef} autoPlay playsInline muted className={styles.video} />
             <canvas ref={overlayRef} className={styles.faceOverlay} />
-            <div className={styles.scanLine} />
 
             <div className={styles.liveBadge}>
               <span className={styles.pulseDot} />LIVE
@@ -838,14 +829,22 @@ export default function App() {
               </div>
             )}
           </div>
+          <div className={styles.feedCta}>
+            <button
+              className={`${styles.btn} ${styles.btnPrimary} ${styles.btnFeed}`}
+              onClick={analyze}
+              disabled={analyzing}
+            >
+              {analyzing ? <span className={styles.spinnerSm} /> : null}
+              {analyzing ? "Reading…" : "👀 Read My Mood"}
+            </button>
+          </div>
         </div>
 
-        {/* Right column */}
-        <div className={styles.sideCol}>
-
-          {/* Last capture + mood row */}
-          <div className={`${styles.panel} ${styles.shadowBlue} ${styles.lastCapturePanel}`}>
-            <div className={styles.panelLabel}>✨ Last Capture</div>
+        {/* Result column — last capture + big mood result */}
+        <div className={`${styles.panel} ${styles.shadowBlue} ${styles.resultPanel}`}>
+          <div className={styles.panelLabel}>✨ Last Capture</div>
+          <div className={styles.resultBody}>
             <div className={styles.lastCaptureFrame}>
               {currentSnapshot ? (
                 <img src={currentSnapshot} alt="snapshot" className={styles.snapshot} />
@@ -856,33 +855,39 @@ export default function App() {
                 </div>
               )}
             </div>
-            <div className={styles.moodRow}>
+
+            <div className={styles.moodResult} style={{ background: moodColor + "22" }}>
               {analyzing ? (
-                <div className={styles.analyzingRow}>
+                <div className={styles.moodResultAnalyzing}>
                   <div className={styles.spinner} />
-                  Reading your mood…
+                  <span>Reading your mood…</span>
                 </div>
               ) : currentEmotion ? (
                 <>
-                  <span className={styles.moodEmoji}>{emoji}</span>
-                  <span className={styles.moodLabel}>{currentEmotion.charAt(0).toUpperCase() + currentEmotion.slice(1)}</span>
-                  {currentDesc && <span className={styles.moodDesc}>"{currentDesc}"</span>}
-                  <span className={styles.moodConf}>{currentConfidence}%</span>
+                  <span className={styles.moodResultEmoji}>{emoji}</span>
+                  <div className={styles.moodResultWord}>
+                    {currentEmotion.charAt(0).toUpperCase() + currentEmotion.slice(1)}
+                  </div>
+                  {currentDesc && <p className={styles.moodResultDesc}>&ldquo;{currentDesc}&rdquo;</p>}
+                  <div className={styles.moodConfBar}>
+                    <div className={styles.moodConfTrack}>
+                      <div className={styles.moodConfFill} style={{ width: `${currentConfidence}%`, background: moodColor }} />
+                    </div>
+                    <span className={styles.moodConfPct}>{currentConfidence}%</span>
+                  </div>
                 </>
               ) : (
-                <>
-                  <span className={styles.moodEmoji}>🎭</span>
-                  <span className={styles.moodLabel}>your mood shows up here</span>
-                </>
+                <div className={styles.moodResultPlaceholder}>
+                  <span>🎭</span>
+                  <span>your mood shows up here</span>
+                </div>
               )}
             </div>
-          </div>
 
-          {/* Multi-person results */}
-          {personResults.length > 1 && (
-            <div className={`${styles.panel} ${styles.shadowPink} ${styles.peoplePanel}`}>
-              <div className={styles.panelLabel}>👥 Multi-person</div>
-              <div className={styles.peopleList}>
+            {/* Multi-person results */}
+            {personResults.length > 1 && (
+              <div className={styles.multiPersonList}>
+                <div className={styles.multiPersonLabel}>👥 {personResults.length} people</div>
                 {personResults.map((p, idx) => (
                   <div key={`${p.idx}-${idx}`} className={styles.personRow}>
                     <span className={styles.personTag}>P{idx + 1}</span>
@@ -891,136 +896,195 @@ export default function App() {
                   </div>
                 ))}
               </div>
-            </div>
-          )}
-
-          {/* Objects */}
-          {objects.length > 0 && (
-            <div className={`${styles.panel} ${styles.shadowBlue} ${styles.peoplePanel}`}>
-              <div className={styles.panelLabel}>📦 Objects</div>
-              <div className={styles.peopleList}>
-                {objects.map((o, idx) => (
-                  <div key={`${o.class}-${idx}`} className={styles.personRow}>
-                    <span className={styles.personTag}>O{idx + 1}</span>
-                    <span className={styles.personEmotion}>{o.class}</span>
-                    <span className={styles.personConf}>{Math.round(o.score * 100)}%</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Recent panel */}
-          <div className={`${styles.panel} ${styles.shadowYellow} ${styles.recentPanel}`}>
-            <div className={styles.panelLabel}>
-              🕘 Recent
-              {history.length > 0 && <span className={styles.panelCount}>{history.length}</span>}
-            </div>
-            <div className={styles.recentBody}>
-              {history.length === 0 ? (
-                <div className={styles.recentEmpty}>
-                  <div className={styles.recentEmptyIcon}>🫥</div>
-                  <div className={styles.recentEmptyCaption}>your mood history shows up here</div>
-                </div>
-              ) : (
-                <div className={styles.recentList}>
-                  {history.map((entry) => (
-                    <div key={entry.id} className={styles.recentItem}>
-                      <div
-                        className={styles.recentThumb}
-                        style={{ background: (EMOTION_COLORS[entry.emotion?.toLowerCase()] ?? "#FFCB2E") + "33" }}
-                      >
-                        {entry.snapshot
-                          ? <img src={entry.snapshot} alt={entry.emotion} className={styles.recentThumbImg} />
-                          : (EMOJI[entry.emotion?.toLowerCase()] ?? "🤔")}
-                      </div>
-                      <div className={styles.recentMeta}>
-                        <div className={styles.recentMoodName}>
-                          {entry.emotion} · {entry.gesture || "None"}
-                        </div>
-                        <div className={styles.recentTime}>{entry.time}</div>
-                      </div>
-                      <div className={styles.recentConf}>{entry.confidence ?? 0}%</div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+            )}
           </div>
-
         </div>
+
       </div>
 
-      {/* Controls */}
-      <div className={styles.controls}>
-        <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={analyze} disabled={analyzing}>
-          {analyzing ? <span className={styles.spinner} /> : null}
-          {analyzing ? "Reading…" : "👀 Read My Mood"}
-        </button>
-
-        <button
-          className={`${styles.btn} ${autoOn ? styles.btnGhostOn : ""}`}
-          onClick={() => { setAutoOn((v) => !v); showToast(autoOn ? "Auto-capture stopped" : "Auto-capture every 5s"); }}
-        >
-          {autoOn ? "⏸ Auto: ON" : "▶ Auto: OFF"}
-        </button>
-
-        <div className={styles.pillGroup}>
-          <div
-            className={`${styles.pill} ${faceBoxesOn ? styles.pillOn : ""}`}
-            onClick={() => { setFaceBoxesOn((v) => !v); showToast((faceBoxesOn ? "Disabled " : "Enabled ") + "Faces"); }}
-          >
-            <span className={`${styles.pillDot} ${faceBoxesOn ? styles.pillDotViolet : ""}`} />
-            Faces
-          </div>
-          <div
-            className={`${styles.pill} ${gestureOn ? styles.pillOn : ""}`}
-            onClick={() => { setGestureOn((v) => !v); showToast((gestureOn ? "Disabled " : "Enabled ") + "Gestures"); }}
-          >
-            <span className={`${styles.pillDot} ${gestureOn ? styles.pillDotOrange : ""}`} />
-            Gestures
-          </div>
-          <div
-            className={`${styles.pill} ${objectOn ? styles.pillOn : ""}`}
-            onClick={() => { setObjectOn((v) => !v); showToast((objectOn ? "Disabled " : "Enabled ") + "Objects"); }}
-          >
-            <span className={`${styles.pillDot} ${objectOn ? styles.pillDotBlue : ""}`} />
-            Objects
-          </div>
-        </div>
-
-        <div className={styles.spacer} />
-
-        <div className={styles.field}>
-          <label className={styles.fieldLabel}>MODE</label>
-          <select
-            className={styles.select}
-            value={performanceMode}
-            onChange={(e) => { setPerformanceMode(e.target.value); showToast("Mode: " + e.target.options[e.target.selectedIndex].text); }}
-          >
-            <option value="balanced">Balanced</option>
-            <option value="fast">Fast</option>
-            <option value="object">Object Demo</option>
-          </select>
-        </div>
-        <div className={styles.field}>
-          <label className={styles.fieldLabel}>MODEL</label>
-          <select
-            className={styles.select}
-            value={selectedModel}
-            onChange={(e) => { setSelectedModel(e.target.value); showToast("Model: " + e.target.value); }}
-          >
-            {models.map((m) => (
-              <option key={m} value={m}>{m}</option>
+      {/* History strip */}
+      <div className={styles.historyBar}>
+        <span className={styles.historyBarLabel}>
+          🕘 Recent
+          {history.length > 0 && <span className={styles.historyBarCount}>{history.length}</span>}
+        </span>
+        {history.length === 0 ? (
+          <span className={styles.historyBarEmpty}>make a face to start your history</span>
+        ) : (
+          <div className={styles.historyStrip}>
+            {history.map((entry) => (
+              <button
+                key={entry.id}
+                type="button"
+                className={styles.historyItem}
+                onClick={() => setHistoryDetail(entry)}
+              >
+                {entry.snapshot ? (
+                  <img src={entry.snapshot} alt={entry.emotion} className={styles.historyImg} />
+                ) : (
+                  <div
+                    className={styles.historyImgFallback}
+                    style={{ background: (EMOTION_COLORS[entry.emotion?.toLowerCase()] ?? "#FFCB2E") + "55" }}
+                  >
+                    {EMOJI[entry.emotion?.toLowerCase()] ?? "🤔"}
+                  </div>
+                )}
+                <div className={styles.historyMeta}>
+                  <span className={styles.historyEmotion}>
+                    {EMOJI[entry.emotion?.toLowerCase()] ?? "🤔"} {entry.emotion}
+                  </span>
+                  <span className={styles.historyTime}>{entry.time}</span>
+                </div>
+              </button>
             ))}
-          </select>
-        </div>
+          </div>
+        )}
       </div>
 
       {/* Toast */}
       <div className={`${styles.toast} ${toastVisible ? styles.toastShow : ""}`}>
         {toastMsg}
       </div>
+
+      {/* History detail modal */}
+      {historyDetail && (
+        <div className={styles.modalOverlay} onClick={() => setHistoryDetail(null)}>
+          <div
+            className={styles.modalCard}
+            onClick={(e) => e.stopPropagation()}
+            style={{ "--mood": EMOTION_COLORS[historyDetail.emotion?.toLowerCase()] ?? "#FF3D7F" }}
+          >
+            <div className={styles.modalHeader}>
+              <span>🕘 Capture detail</span>
+              <button className={styles.settingsClose} onClick={() => setHistoryDetail(null)}>✕</button>
+            </div>
+            <div className={styles.modalBody}>
+              <div className={styles.modalShot}>
+                {historyDetail.snapshot ? (
+                  <img src={historyDetail.snapshot} alt={historyDetail.emotion} />
+                ) : (
+                  <div className={styles.modalShotEmpty}>
+                    {EMOJI[historyDetail.emotion?.toLowerCase()] ?? "🤔"}
+                  </div>
+                )}
+              </div>
+              <div className={styles.modalResult} style={{ background: (EMOTION_COLORS[historyDetail.emotion?.toLowerCase()] ?? "#FF3D7F") + "22" }}>
+                <span className={styles.modalEmoji}>
+                  {EMOJI[historyDetail.emotion?.toLowerCase()] ?? "🤔"}
+                </span>
+                <div className={styles.modalEmotion}>
+                  {(historyDetail.emotion || "unknown").charAt(0).toUpperCase() + (historyDetail.emotion || "unknown").slice(1)}
+                </div>
+                {historyDetail.description && (
+                  <p className={styles.modalDesc}>&ldquo;{historyDetail.description}&rdquo;</p>
+                )}
+                <div className={styles.moodConfBar}>
+                  <div className={styles.moodConfTrack}>
+                    <div
+                      className={styles.moodConfFill}
+                      style={{
+                        width: `${historyDetail.confidence ?? 0}%`,
+                        background: EMOTION_COLORS[historyDetail.emotion?.toLowerCase()] ?? "#FF3D7F",
+                      }}
+                    />
+                  </div>
+                  <span className={styles.moodConfPct}>{historyDetail.confidence ?? 0}%</span>
+                </div>
+                <div className={styles.modalMeta}>
+                  <span>{historyDetail.time}</span>
+                  {historyDetail.gesture && historyDetail.gesture !== "None" && (
+                    <span>Gesture: {historyDetail.gesture}</span>
+                  )}
+                  {historyDetail.people > 1 && (
+                    <span>{historyDetail.people} people</span>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Settings overlay */}
+      {settingsOpen && (
+        <div className={styles.settingsOverlay} onClick={() => setSettingsOpen(false)}>
+          <div className={styles.settingsPanel} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.settingsHeader}>
+              <span>⚙ Settings</span>
+              <button className={styles.settingsClose} onClick={() => setSettingsOpen(false)}>✕</button>
+            </div>
+            <div className={styles.settingsBody}>
+
+              <div className={styles.settingsSection}>
+                <div className={styles.settingsSectionTitle}>Capture</div>
+                <div className={styles.settingsToggles}>
+                  <button
+                    className={`${styles.settingsToggle} ${autoOn ? styles.settingsToggleOn : ""}`}
+                    onClick={() => { setAutoOn((v) => !v); showToast(autoOn ? "Auto stopped" : "Auto every 5s"); }}
+                  >
+                    <span className={styles.settingsToggleDot} style={{ background: autoOn ? "#A6E22E" : "#ccc" }} />
+                    {autoOn ? "Auto: ON (every 5s)" : "Auto: OFF"}
+                  </button>
+                </div>
+              </div>
+
+              <div className={styles.settingsSection}>
+                <div className={styles.settingsSectionTitle}>Performance Mode</div>
+                <select
+                  className={styles.settingsSelect}
+                  value={performanceMode}
+                  onChange={(e) => { setPerformanceMode(e.target.value); showToast("Mode: " + e.target.options[e.target.selectedIndex].text); }}
+                >
+                  <option value="balanced">Balanced</option>
+                  <option value="fast">Fast</option>
+                  <option value="object">Object Demo</option>
+                </select>
+              </div>
+
+              <div className={styles.settingsSection}>
+                <div className={styles.settingsSectionTitle}>AI Model</div>
+                <select
+                  className={styles.settingsSelect}
+                  value={selectedModel}
+                  onChange={(e) => { setSelectedModel(e.target.value); showToast("Model: " + e.target.value); }}
+                >
+                  {models.map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className={styles.settingsSection}>
+                <div className={styles.settingsSectionTitle}>Detection</div>
+                <div className={styles.settingsToggles}>
+                  <button
+                    className={`${styles.settingsToggle} ${faceBoxesOn ? styles.settingsToggleOn : ""}`}
+                    onClick={() => { setFaceBoxesOn((v) => !v); showToast((faceBoxesOn ? "Disabled " : "Enabled ") + "Faces"); }}
+                  >
+                    <span className={styles.settingsToggleDot} style={{ background: faceBoxesOn ? "#8C6BFF" : "#ccc" }} />
+                    Faces
+                  </button>
+                  <button
+                    className={`${styles.settingsToggle} ${gestureOn ? styles.settingsToggleOn : ""}`}
+                    onClick={() => { setGestureOn((v) => !v); showToast((gestureOn ? "Disabled " : "Enabled ") + "Gestures"); }}
+                  >
+                    <span className={styles.settingsToggleDot} style={{ background: gestureOn ? "#FF8A3D" : "#ccc" }} />
+                    Gestures
+                  </button>
+                  <button
+                    className={`${styles.settingsToggle} ${objectOn ? styles.settingsToggleOn : ""}`}
+                    onClick={() => { setObjectOn((v) => !v); showToast((objectOn ? "Disabled " : "Enabled ") + "Objects"); }}
+                  >
+                    <span className={styles.settingsToggleDot} style={{ background: objectOn ? "#2FA8FF" : "#ccc" }} />
+                    Objects
+                  </button>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );
