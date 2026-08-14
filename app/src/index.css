@@ -1,23 +1,19 @@
+@import url('https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg: #f1f5f9;
-  --surface: #ffffff;
-  --surface-2: #f8fafc;
-  --border: #e2e8f0;
-  --text: #0f172a;
-  --text-mid: #475569;
-  --text-dim: #94a3b8;
-  --accent: #4f46e5;
-  --accent-2: #06b6d4;
-  --accent-light: rgba(79, 70, 229, 0.08);
-  --green: #16a34a;
-  --green-light: rgba(22, 163, 74, 0.08);
-  --red: #dc2626;
-  --red-light: rgba(220, 38, 38, 0.08);
-  --shadow-sm: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
-  --shadow: 0 4px 16px rgba(0,0,0,0.08), 0 1px 3px rgba(0,0,0,0.05);
-  --gradient: linear-gradient(135deg, #4f46e5, #06b6d4);
+  --bg:     #FAF9F5;
+  --ink:    #16161D;
+  --pink:   #FF3D7F;
+  --blue:   #2FA8FF;
+  --yellow: #FFCB2E;
+  --lime:   #A6E22E;
+  --orange: #FF8A3D;
+  --violet: #8C6BFF;
+  --card:   #FFFFFF;
+  --mood:   #FF3D7F;
+  --line:   #16161D;
 }
 
 html, body, #root {
@@ -25,20 +21,48 @@ html, body, #root {
   overflow: hidden;
 }
 
-body {
-  background: var(--bg);
-  color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+#root {
+  display: flex;
+  flex-direction: column;
 }
 
-@keyframes pop {
-  0%   { transform: scale(0.75); opacity: 0; }
-  70%  { transform: scale(1.1); }
-  100% { transform: scale(1); opacity: 1; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: 'Inter', sans-serif;
+  height: 100dvh;
+}
+
+/* ── Keyframes ───────────────────────────────────────────────── */
+@keyframes wiggle {
+  0%,100% { transform: rotate(-4deg); }
+  50%     { transform: rotate(2deg); }
+}
+
+@keyframes blink {
+  0%,100% { opacity: 1; }
+  50%     { opacity: 0.25; }
+}
+
+@keyframes scan {
+  0%   { top: 3%; }
+  50%  { top: 94%; }
+  100% { top: 3%; }
+}
+
+@keyframes slidein {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+@keyframes pop {
+  0%  { transform: scale(0.75); opacity: 0; }
+  70% { transform: scale(1.1); }
+  100%{ transform: scale(1);   opacity: 1; }
 }
 
 @keyframes fadein {
@@ -46,7 +70,13 @@ body {
   to   { opacity: 1; transform: translateY(0); }
 }
 
+@keyframes riseFade {
+  0%   { transform: translateY(0) scale(0.85); opacity: 0; }
+  15%  { opacity: 1; }
+  100% { transform: translateY(-260px) scale(1.12); opacity: 0; }
+}
+
 @keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.5; }
+  0%,100% { opacity: 1; }
+  50%      { opacity: 0.5; }
 }
